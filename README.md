@@ -3,7 +3,7 @@
 enhanced tape recorder. never miss a moment.
 
 ```
-;install https://github.com/yourusername/recorder
+;install https://github.com/semierendonmez-commits/recorder
 ```
 
 ### usage
