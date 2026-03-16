@@ -1,22 +1,21 @@
 -- recorder
--- v2.0.0 @semi
+-- v3.0.0 @semi
 --
 -- enhanced tape recorder mod
--- params menu integrated
--- no key combos (avoids conflicts)
+-- all controls via params menu
+-- records main output
 
 local mod = require 'core/mods'
 
 local state = {
   recording = false,
-  rec_start_time = 0,
-  segment_count = 0,
+  rec_start = 0,
+  segments = 0,
   total_time = 0,
-  current_file = "",
   show_dot = true,
   always_on = false,
-  rec_clock = nil,
   dir = _path.audio .. "recorder/",
+  redraw_clock = nil,
 }
 
 local function ensure_dir()
@@ -36,46 +35,43 @@ local function gen_filename()
   local sname = get_script_name()
   local bpm = "000"
   pcall(function() bpm = string.format("%03d", math.floor(clock.get_tempo())) end)
-  state.segment_count = state.segment_count + 1
+  state.segments = state.segments + 1
   return string.format("%s%s_%s_%sbpm_%03d.wav",
-    state.dir, ts, sname, bpm, state.segment_count)
-end
-
-local function start_recording()
-  if state.recording then return end
-  ensure_dir()
-  state.current_file = gen_filename()
-  if _norns and _norns.tape_rec_open then
-    _norns.tape_rec_open(state.current_file)
-    _norns.tape_rec_start()
-    state.recording = true
-    state.rec_start_time = util.time()
-    print("recorder: started " .. state.current_file)
-  end
-end
-
-local function stop_recording()
-  if not state.recording then return end
-  if _norns and _norns.tape_rec_stop then
-    _norns.tape_rec_stop()
-    local dur = util.time() - state.rec_start_time
-    state.total_time = state.total_time + dur
-    state.recording = false
-    print(string.format("recorder: saved %.1fs", dur))
-  end
-end
-
-local function split_recording()
-  if not state.recording then
-    start_recording()
-    return
-  end
-  stop_recording()
-  start_recording()
+    state.dir, ts, sname, bpm, state.segments)
 end
 
 local function fmt_time(s)
   return string.format("%d:%02d", math.floor(s / 60), math.floor(s % 60))
+end
+
+local function start_rec()
+  if state.recording then return end
+  ensure_dir()
+  local path = gen_filename()
+  -- norns tape API: records main output
+  audio.tape_rec_open(path)
+  audio.tape_rec_start()
+  state.recording = true
+  state.rec_start = util.time()
+  print("recorder: started " .. path)
+end
+
+local function stop_rec()
+  if not state.recording then return end
+  audio.tape_rec_stop()
+  local dur = util.time() - state.rec_start
+  state.total_time = state.total_time + dur
+  state.recording = false
+  print(string.format("recorder: saved %.1fs", dur))
+end
+
+local function split_rec()
+  if not state.recording then
+    start_rec()
+  else
+    stop_rec()
+    start_rec()
+  end
 end
 
 -- ============ PARAMS ============
@@ -83,23 +79,19 @@ end
 local function add_params()
   params:add_separator("RECORDER")
 
-  params:add_option("rec_record", "recording", {"OFF", "ON"}, 1)
-  params:set_action("rec_record", function(v)
-    if v == 2 then start_recording() else stop_recording() end
+  params:add_option("rec_on", "recording", {"OFF", "REC"}, 1)
+  params:set_action("rec_on", function(v)
+    if v == 2 then start_rec() else stop_rec() end
   end)
 
-  params:add_trigger("rec_split", "split (new file)")
-  params:set_action("rec_split", function() split_recording() end)
+  params:add_trigger("rec_split", "> split (new file)")
+  params:set_action("rec_split", function() split_rec() end)
 
-  params:add_option("rec_always_on", "auto-record", {"OFF", "ON"}, 1)
-  params:set_action("rec_always_on", function(v)
-    state.always_on = (v == 2)
-  end)
+  params:add_option("rec_auto", "auto-record", {"OFF", "ON"}, 1)
+  params:set_action("rec_auto", function(v) state.always_on = (v == 2) end)
 
-  params:add_option("rec_show_dot", "show indicator", {"OFF", "ON"}, 2)
-  params:set_action("rec_show_dot", function(v)
-    state.show_dot = (v == 2)
-  end)
+  params:add_option("rec_dot", "show indicator", {"OFF", "ON"}, 2)
+  params:set_action("rec_dot", function(v) state.show_dot = (v == 2) end)
 end
 
 -- ============ HOOKS ============
@@ -107,69 +99,63 @@ end
 mod.hook.register("script_post_init", "recorder", function()
   add_params()
 
-  -- wrap redraw for recording indicator
+  -- wrap redraw for indicator
   local script_redraw = redraw
   redraw = function()
     if script_redraw then script_redraw() end
     if state.recording and state.show_dot then
-      local t = util.time() - state.rec_start_time
-      -- blinking red dot top-right
-      local blink = math.floor(t * 2) % 2 == 0
-      screen.level(blink and 10 or 4)
-      screen.rect(122, 1, 4, 4)
+      local t = util.time() - state.rec_start
+      local blink = math.floor(t * 2) % 2
+      screen.level(blink == 0 and 12 or 4)
+      screen.rect(122, 0, 5, 5)
       screen.fill()
-      -- time indicator
       screen.level(3)
-      screen.move(120, 7)
+      screen.font_face(1); screen.font_size(8)
+      screen.move(119, 7)
       screen.text_right(fmt_time(t))
       screen.update()
     end
   end
 
-  -- auto-record if enabled
+  -- auto-start if enabled
   if state.always_on then
     clock.run(function()
-      clock.sleep(0.5)
-      start_recording()
-      params:set("rec_record", 2)
+      clock.sleep(1.0)
+      start_rec()
+      pcall(function() params:set("rec_on", 2) end)
     end)
   end
 end)
 
 mod.hook.register("script_post_cleanup", "recorder", function()
-  if state.recording then
-    stop_recording()
-  end
+  stop_rec()
 end)
 
 -- ============ MOD MENU ============
 
 local m = {}
-local menu_items = {"record", "split", "auto-record", "show dot", "segments", "total time"}
 local menu_sel = 1
+local menu_items = {"recording", "split", "auto-record", "show dot", "---", "segments", "total"}
 
 m.key = function(n, z)
-  if n == 2 and z == 1 then
-    mod.menu.exit()
+  if n == 2 and z == 1 then mod.menu.exit()
   elseif n == 3 and z == 1 then
     if menu_sel == 1 then
-      if state.recording then stop_recording() else start_recording() end
-      pcall(function() params:set("rec_record", state.recording and 2 or 1) end)
+      if state.recording then stop_rec() else start_rec() end
+      pcall(function() params:set("rec_on", state.recording and 2 or 1) end)
     elseif menu_sel == 2 then
-      split_recording()
+      split_rec()
+      pcall(function() params:set("rec_on", 2) end)
     end
     mod.menu.redraw()
   end
 end
 
 m.enc = function(n, d)
-  if n == 2 then
-    menu_sel = util.clamp(menu_sel + d, 1, #menu_items)
+  if n == 2 then menu_sel = util.clamp(menu_sel + d, 1, #menu_items)
   elseif n == 3 then
-    if menu_sel == 3 then
-      pcall(function() params:delta("rec_always_on", d) end)
-    elseif menu_sel == 4 then
-      pcall(function() params:delta("rec_show_dot", d) end)
+    if menu_sel == 3 then pcall(function() params:delta("rec_auto", d) end)
+    elseif menu_sel == 4 then pcall(function() params:delta("rec_dot", d) end)
     end
   end
   mod.menu.redraw()
@@ -178,44 +164,34 @@ end
 m.redraw = function()
   screen.clear()
   screen.font_face(1); screen.font_size(8)
-  screen.level(10)
-  screen.move(1, 7); screen.text("RECORDER")
+  screen.level(10); screen.move(1, 7); screen.text("RECORDER")
   if state.recording then
-    screen.level(12)
-    local t = util.time() - state.rec_start_time
-    screen.move(128, 7); screen.text_right("REC " .. fmt_time(t))
+    local t = util.time() - state.rec_start
+    screen.level(15); screen.move(128, 7); screen.text_right("REC " .. fmt_time(t))
   end
-
+  local vals = {
+    state.recording and "REC" or "off",
+    "K3",
+    state.always_on and "ON" or "off",
+    state.show_dot and "ON" or "off",
+    "",
+    tostring(state.segments),
+    fmt_time(state.total_time),
+  }
   for i, name in ipairs(menu_items) do
-    local y = 14 + i * 8
-    if y > 56 then break end
-    screen.level(i == menu_sel and 15 or 4)
-    screen.move(4, y)
-    screen.text(name)
-    screen.move(80, y)
-    if i == 1 then
-      screen.level(state.recording and 12 or 3)
-      screen.text(state.recording and "REC" or "off")
-    elseif i == 2 then
-      screen.level(3); screen.text("K3")
-    elseif i == 3 then
-      screen.level(state.always_on and 8 or 3)
-      screen.text(state.always_on and "ON" or "off")
-    elseif i == 4 then
-      screen.level(state.show_dot and 8 or 3)
-      screen.text(state.show_dot and "ON" or "off")
-    elseif i == 5 then
-      screen.level(6); screen.text(tostring(state.segment_count))
-    elseif i == 6 then
-      screen.level(6); screen.text(fmt_time(state.total_time))
+    if i <= 7 then
+      local y = 12 + i * 7
+      screen.level(i == menu_sel and 15 or 4)
+      screen.move(4, y); screen.text(name)
+      screen.move(80, y)
+      screen.level(i == menu_sel and 10 or 3)
+      screen.text(vals[i])
     end
   end
-
-  screen.level(2)
-  screen.move(1, 63); screen.text("E2:sel E3:adj K3:action")
+  screen.level(2); screen.move(1, 63); screen.text("E2:sel E3:adj K3:act")
   screen.update()
 end
 
 m.init = function() end
-m.deinit = function() stop_recording() end
+m.deinit = function() stop_rec() end
 mod.menu.register(mod.this_name, m)
